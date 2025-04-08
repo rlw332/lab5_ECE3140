@@ -148,7 +148,7 @@ unsigned int * process_select (unsigned int * cursp) {
 	}
 }
 
-int cmp_time(realtime_t first, realtime_t second) { // 1 if first earlier, 0 if second earlier
+int cmp_time(realtime_t *first, realtime_t *second) { // 1 if first earlier, 0 if second earlier
 	if((first -> sec < second -> sec) || ((first -> sec == second -> sec) && (first -> ms <= second -> ms))) {
 		return 1;
 	}
