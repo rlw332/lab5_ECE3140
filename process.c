@@ -33,6 +33,9 @@
 
 realtime_t current_time = {0, 0};
 
+process_queue_t ready_rt = {NULL};
+process_queue_t not_ready_rt = {NULL};
+
 static void process_free(process_t *proc) {
 	process_stack_free(proc->orig_sp, proc->n);
 	free(proc);
