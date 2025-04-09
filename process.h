@@ -21,7 +21,7 @@
 struct process_state{
 	unsigned int *sp;
 	unsigned int *orig_sp;
-	int n;
+	int n;      //Number of jobs
 	int is_realtime;    //Flag to indicate if process is RT (1) or non-RT (0)
 	realtime_t *arrival_time;  //Start timing
 	realtime_t *deadline;  //Absolute deadline based on process_start()
