@@ -1,4 +1,3 @@
-
 /*
  * process.h
  *
@@ -17,13 +16,15 @@
 #ifndef PROCESS_H_
 #define PROCESS_H_
 
+#include "realtime.h"
+
 struct process_state{
 	unsigned int *sp;
 	unsigned int *orig_sp;
 	int n;
-	int is_realtime;
-	realtime_t *arrival_time;
-	realtime_t *deadline;
+	int is_realtime;    //Flag to indicate if process is RT (1) or non-RT (0)
+	realtime_t *arrival_time;  //Start timing
+	realtime_t *deadline;  //Absolute deadline based on process_start()
 	struct process_state * next;
 };
 
