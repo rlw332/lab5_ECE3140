@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include "3140_concur.h"
 #include "realtime.h"
-#include "process.h"
+#include "led.h"
 
 extern process_queue_t process_queue;  // Global non‐RT process queue
 process_queue_t ready_rt = {NULL};       // Ready real‐time process queue
@@ -14,6 +14,8 @@ int process_deadline_miss = 0;
 
 volatile realtime_t current_time = {0, 0};
 
+unsigned int *idle_process_sp = NULL;
+
 static void process_free(process_t *proc) {
     if (proc->is_realtime) {
         free(proc->arrival_time);
@@ -23,15 +25,24 @@ static void process_free(process_t *proc) {
     free(proc);
 }
 
+void idle_process(void) {
+    while (1) {
+    }
+}
 /* Starts up the concurrent execution */
 void process_start (void) {
+	idle_process_sp = process_stack_init(idle_process, 20);
+
 	SIM->SCGC6 |= SIM_SCGC6_PIT_MASK;
 	PIT->MCR = 0;
 	PIT->CHANNEL[0].LDVAL = 150000;
+	PIT->CHANNEL[1].LDVAL = 15000;
+	PIT->CHANNEL[1].TCTRL = PIT_TCTRL_TIE_MASK | PIT_TCTRL_TEN_MASK;
+
 	NVIC_EnableIRQ(PIT_IRQn);
 	// Don't enable the timer yet. The scheduler will do so itself
 
-	if(is_empty(&process_queue)) return;
+	if(is_empty(&process_queue) && is_empty(&ready_rt) && is_empty(&not_ready_rt)) return;
 	//bail out fast if no processes were ever created
 
 	process_begin();
@@ -159,22 +170,22 @@ int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *dea
         add_sorted_deadline(proc, &ready_rt);
     } else {
         add_sorted_arrival(proc, &not_ready_rt);
+        red_toggle_frdm();
     }
     return 0;
 }
+
 /* Called by the runtime system to select another process.
    "cursp" = the stack pointer for the currently running process
 */
 unsigned int *process_select(unsigned int *cursp) {
-
     if (cursp && current_process_p) {
         // Update the saved stack pointer for the currently running process.
         current_process_p->sp = cursp;
         if ((current_process_p->is_realtime)) {
         	// For real-time processes, re-enqueue into
         	// real-time queue in case another high priority process ready now
-			//add_sorted_deadline(current_process_p, &ready_rt);
-        	return current_process_p -> sp;
+			add_sorted_deadline(current_process_p, &ready_rt);
         } else {
         	// For non-real-time processes, requeue for later execution.
         	enqueue(current_process_p, &process_queue);
@@ -183,7 +194,7 @@ unsigned int *process_select(unsigned int *cursp) {
         // Process has terminated.
         if (current_process_p->is_realtime) {
             realtime_t deadline_abs = compute_abs_deadline(current_process_p);
-            if (cmp_time(&current_time, &deadline_abs)) {
+            if (cmp_time(&deadline_abs, &current_time)) {
                 process_deadline_miss++;
             } else {
                 process_deadline_met++;
@@ -194,38 +205,37 @@ unsigned int *process_select(unsigned int *cursp) {
     }
 
 
-    if(is_empty(&ready_rt) && is_empty(&process_queue) && is_empty(&not_ready_rt)) {
-    	return NULL;
-    }
+    while (!is_empty(&not_ready_rt) &&
+               cmp_time(not_ready_rt.head->arrival_time, &current_time)) {
+		process_t *proc = dequeue(&not_ready_rt);
+		add_sorted_deadline(proc, &ready_rt);
+	}
     // Select the next process:
     // Give priority to ready real-time processes.
-    while(!is_empty(&ready_rt) || !is_empty(&process_queue) || !is_empty(&not_ready_rt)) {
-		if (!is_empty(&ready_rt)) {
-			current_process_p = dequeue(&ready_rt);
-			return current_process_p->sp;
-		} else if (!is_empty(&process_queue)) {
-			current_process_p = dequeue(&process_queue);
-			return current_process_p->sp;
-		}
-    }
+    if (!is_empty(&ready_rt)) {
+		current_process_p = dequeue(&ready_rt);
+		return current_process_p->sp;
+	} else if (!is_empty(&process_queue)) {
+		current_process_p = dequeue(&process_queue);
+		return current_process_p->sp;
+	} else if (!is_empty(&not_ready_rt)) {
+		return idle_process_sp;
+	} else {
+		return NULL;
+	}
 
 
-    return current_process_p->sp;
 }
 
 
 void PIT1_Service(void) {
+	__disable_irq();
     current_time.msec++;
     if (current_time.msec >= 1000) {
         current_time.sec += current_time.msec/1000;
         current_time.msec %= 1000;
     }
 
-    while (!is_empty(&not_ready_rt) &&
-           cmp_time(not_ready_rt.head->arrival_time, &current_time)) {
-        process_t *proc = dequeue(&not_ready_rt);
-        add_sorted_deadline(proc, &ready_rt);
-    }
-
     PIT->CHANNEL[1].TFLG = PIT_TFLG_TIF_MASK;
+    __enable_irq();
 }
