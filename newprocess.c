@@ -28,6 +28,7 @@
 #include "3140_concur.h"
 #include "realtime.h"
 #include "process.h"
+#include "led.h"
 
 volatile realtime_t current_time = {0, 0};
 int process_deadline_met = 0;  // Counter for jobs that meet deadline
@@ -65,7 +66,7 @@ static void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
     }
 
     process_t *cur = queue->head;
-    while (!(cur->next == NULL) && !cmp_time(proc->arrival_time, cur->next->arrival_time)) {
+    while (!(cur->next == NULL) && cmp_time(cur->next->arrival_time, proc->arrival_time)) {
         cur = cur->next;
     }
     proc->next = cur->next;
@@ -109,7 +110,6 @@ static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
 }
 
 void PIT1_Service(void) {
-	__disable_irq();
     current_time.msec++;
     if (current_time.msec >= 1000) {
         current_time.sec += current_time.msec/1000;
@@ -121,7 +121,8 @@ void PIT1_Service(void) {
         process_t *proc = dequeue(&not_ready_rt);
         add_sorted_deadline(proc, &ready_rt);
     }
-    __enable_irq();
+
+    PIT->CHANNEL[1].TFLG = PIT_TFLG_TIF_MASK;
 }
 
 int process_create(void (*f)(void), int n) {
@@ -184,19 +185,20 @@ int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *dea
 
 
 unsigned int *process_select(unsigned int *cursp) {
+
     if (cursp && current_process_p) {
         // Update the saved stack pointer for the currently running process.
         current_process_p->sp = cursp;
-        if (!current_process_p->is_realtime) {
-            // For non-real-time processes, requeue for later execution.
-            enqueue(current_process_p, &process_queue);
+        if ((current_process_p->is_realtime)) {
+        	// For real-time processes, do not requeue.
+			// Simply return the updated context so that execution resumes
+			// from the point of preemption.
+			return current_process_p->sp;
         } else {
-            // For real-time processes, do not requeue.
-            // Simply return the updated context so that execution resumes
-            // from the point of preemption.
-            return current_process_p->sp;
+        	// For non-real-time processes, requeue for later execution.
+        	enqueue(current_process_p, &process_queue);
         }
-    } else if (current_process_p) {
+    } else if(current_process_p){
         // Process has terminated.
         if (current_process_p->is_realtime) {
             realtime_t deadline_abs = compute_abs_deadline(current_process_p);
@@ -211,17 +213,21 @@ unsigned int *process_select(unsigned int *cursp) {
 
     // Select the next process:
     // Give priority to ready real-time processes.
-    if (!is_empty(&ready_rt)) {
-        current_process_p = dequeue(&ready_rt);
-    } else if (!is_empty(&process_queue)) {
-        current_process_p = dequeue(&process_queue);
-    } else if (!is_empty(&not_ready_rt)) {
-    	return process_select(cursp);
-    } else {
-        current_process_p = NULL;
+    if(is_empty(&ready_rt) && is_empty(&process_queue) && is_empty(&not_ready_rt)) {
+    	return NULL;
+    }
+    while(!is_empty(&ready_rt) || !is_empty(&process_queue) || !is_empty(&not_ready_rt)) {
+		if (!is_empty(&ready_rt)) {
+			current_process_p = dequeue(&ready_rt);
+			return current_process_p->sp;
+		} else if (!is_empty(&process_queue)) {
+			current_process_p = dequeue(&process_queue);
+			return current_process_p->sp;
+		}
     }
 
-    return current_process_p ? current_process_p->sp : NULL;
+
+    return current_process_p->sp;
 }
 
 void process_start(void) {
@@ -239,7 +245,9 @@ void process_start(void) {
     current_time.sec = 0;
     current_time.msec = 0;
 
-    if (!is_empty(&process_queue) || !is_empty(&ready_rt)) {
+    current_process_p = NULL;
+
+    if (!is_empty(&process_queue) || !is_empty(&ready_rt) || !is_empty(&not_ready_rt)) {
         process_begin();
     }
 }
