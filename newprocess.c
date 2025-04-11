@@ -81,9 +81,14 @@ static realtime_t compute_abs_deadline(process_t *proc) {
 }
 
 static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
-	realtime_t abs_deadline_proc = compute_abs_deadline(proc);
-	realtime_t abs_deadline_head = compute_abs_deadline(queue->head);
-    if (!queue->head || cmp_time(&abs_deadline_proc, &abs_deadline_head)) {
+    realtime_t abs_deadline_proc = compute_abs_deadline(proc);
+    if (!queue->head) {
+        proc->next = queue->head;
+        queue->head = proc;
+        return;
+    }
+    realtime_t abs_deadline_head = compute_abs_deadline(queue->head);
+    if (cmp_time(&abs_deadline_proc, &abs_deadline_head)) {
         proc->next = queue->head;
         queue->head = proc;
         return;
@@ -100,8 +105,6 @@ static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
     proc->next = cur->next;
     cur->next = proc;
 }
-
-
 
 void PIT1_Service(void) {
     current_time.msec++;
