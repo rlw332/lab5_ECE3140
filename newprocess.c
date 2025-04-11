@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include "3140_concur.h"
 #include "realtime.h"
+#include "process.h"
 
 extern process_queue_t process_queue;  // Global non‐RT process queue
 process_queue_t ready_rt = {NULL};       // Ready real‐time process queue
