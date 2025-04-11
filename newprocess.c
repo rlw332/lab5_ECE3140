@@ -14,7 +14,7 @@ int process_deadline_miss = 0;
 
 volatile realtime_t current_time = {0, 0};
 
-unsigned int *idle_process_sp = NULL;
+process_t *idle_process = NULL;
 
 static void process_free(process_t *proc) {
     if (proc->is_realtime) {
@@ -25,13 +25,18 @@ static void process_free(process_t *proc) {
     free(proc);
 }
 
-void idle_process(void) {
+void idle(void) {
     while (1) {
     }
 }
 /* Starts up the concurrent execution */
 void process_start (void) {
-	idle_process_sp = process_stack_init(idle_process, 20);
+	unsigned int *sp = process_stack_init(idle, 20);
+
+	idle_process = (process_t*)malloc(sizeof(process_t));
+	idle_process->sp = idle_process->orig_sp = sp;
+	idle_process->n = 20;
+	idle_process->is_realtime = -1;
 
 	SIM->SCGC6 |= SIM_SCGC6_PIT_MASK;
 	PIT->MCR = 0;
@@ -170,7 +175,6 @@ int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *dea
         add_sorted_deadline(proc, &ready_rt);
     } else {
         add_sorted_arrival(proc, &not_ready_rt);
-        red_toggle_frdm();
     }
     return 0;
 }
@@ -182,7 +186,7 @@ unsigned int *process_select(unsigned int *cursp) {
     if (cursp && current_process_p) {
         // Update the saved stack pointer for the currently running process.
         current_process_p->sp = cursp;
-        if ((current_process_p->is_realtime)) {
+        if (current_process_p->is_realtime == 1) {
         	// For real-time processes, re-enqueue into
         	// real-time queue in case another high priority process ready now
 			add_sorted_deadline(current_process_p, &ready_rt);
@@ -192,7 +196,7 @@ unsigned int *process_select(unsigned int *cursp) {
         }
     } else if(current_process_p){
         // Process has terminated.
-        if (current_process_p->is_realtime) {
+        if (current_process_p->is_realtime == 0) {
             realtime_t deadline_abs = compute_abs_deadline(current_process_p);
             if (cmp_time(&deadline_abs, &current_time)) {
                 process_deadline_miss++;
@@ -219,7 +223,8 @@ unsigned int *process_select(unsigned int *cursp) {
 		current_process_p = dequeue(&process_queue);
 		return current_process_p->sp;
 	} else if (!is_empty(&not_ready_rt)) {
-		return idle_process_sp;
+		current_process_p = idle_process;
+		return current_process_p->sp;
 	} else {
 		return NULL;
 	}
