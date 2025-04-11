@@ -1,3 +1,20 @@
+/* process.c
+ *
+ * Nils Napp
+ * Cornell University
+ * All rights reserved
+ *
+ * Jan 2024
+ * Ithaca NY
+ *
+ * This file is part of the ECE3140/CS3420 offering for Spring 2024. If you
+ * are not part of this class you should not have access to this file. Do not
+ * post, share, or otherwise distribute this file. We will consider it an AI
+ * violation if you do. If you somehow get this code and you are NOT enrolled
+ * the Spring 2024 version of ECE3140 please contact the course staff
+ * immediately and describe how you found it.
+ */
+
 
 
 #include <stdlib.h>
@@ -190,13 +207,13 @@ unsigned int *process_select(unsigned int *cursp) {
         	// For real-time processes, re-enqueue into
         	// real-time queue in case another high priority process ready now
 			add_sorted_deadline(current_process_p, &ready_rt);
-        } else {
+        } else if (current_process_p->is_realtime == 0) {
         	// For non-real-time processes, requeue for later execution.
         	enqueue(current_process_p, &process_queue);
         }
     } else if(current_process_p){
         // Process has terminated.
-        if (current_process_p->is_realtime == 0) {
+        if (current_process_p->is_realtime == 1) {
             realtime_t deadline_abs = compute_abs_deadline(current_process_p);
             if (cmp_time(&deadline_abs, &current_time)) {
                 process_deadline_miss++;
