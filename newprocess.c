@@ -55,14 +55,17 @@ static int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two
 }
 
 static void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
-    if (!queue->head || cmp_time(proc->arrival_time, queue->head->arrival_time)) {
+	if(queue->head == NULL) {
+		queue->head = proc;
+	}
+    if (cmp_time(proc->arrival_time, queue->head->arrival_time)) {
         proc->next = queue->head;
         queue->head = proc;
         return;
     }
 
     process_t *cur = queue->head;
-    while (cur->next && !cmp_time(proc->arrival_time, cur->next->arrival_time)) {
+    while (!(cur->next == NULL) && !cmp_time(proc->arrival_time, cur->next->arrival_time)) {
         cur = cur->next;
     }
     proc->next = cur->next;
@@ -82,8 +85,7 @@ static realtime_t compute_abs_deadline(process_t *proc) {
 
 static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
     realtime_t abs_deadline_proc = compute_abs_deadline(proc);
-    if (!queue->head) {
-        proc->next = queue->head;
+    if (queue->head == NULL) {
         queue->head = proc;
         return;
     }
@@ -95,7 +97,7 @@ static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
     }
 
     process_t *cur = queue->head;
-    while (cur->next) {
+    while (!(cur->next == NULL)) {
         realtime_t abs_deadline_next = compute_abs_deadline(cur->next);
         if (cmp_time(&abs_deadline_proc, &abs_deadline_next)) {
             break;
@@ -107,10 +109,11 @@ static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
 }
 
 void PIT1_Service(void) {
+	__disable_irq();
     current_time.msec++;
     if (current_time.msec >= 1000) {
-        current_time.msec = 0;
-        current_time.sec++;
+        current_time.sec += current_time.msec/1000;
+        current_time.msec %= 1000;
     }
 
     while (!is_empty(&not_ready_rt) &&
@@ -118,6 +121,7 @@ void PIT1_Service(void) {
         process_t *proc = dequeue(&not_ready_rt);
         add_sorted_deadline(proc, &ready_rt);
     }
+    __enable_irq();
 }
 
 int process_create(void (*f)(void), int n) {
@@ -211,6 +215,8 @@ unsigned int *process_select(unsigned int *cursp) {
         current_process_p = dequeue(&ready_rt);
     } else if (!is_empty(&process_queue)) {
         current_process_p = dequeue(&process_queue);
+    } else if (!is_empty(&not_ready_rt)) {
+    	return process_select(cursp);
     } else {
         current_process_p = NULL;
     }
