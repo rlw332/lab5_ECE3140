@@ -1,42 +1,17 @@
-/* process.c
- *
- * Nils Napp
- * Cornell University
- * All rights reserved
- *
- * Jan 2024
- * Ithaca NY
- *
- * This file is part of the ECE3140/CS3420 offering for Spring 2024. If you
- * are not part of this class you should not have access to this file. Do not
- * post, share, or otherwise distribute this file. We will consider it an AI
- * violation if you do. If you somehow get this code and you are NOT enrolled
- * the Spring 2024 version of ECE3140 please contact the course staff
- * immediately and describe how you found it.
- */
 
-// So far this turns the green led on but then never turns it off. I've tried debugging it but no matter what I do,
-// it doesn't seem to want to do anything else. I've looked over it and I think the helpers, global variables, and proc_start
-// are all ok. ChatGPT similarly thinks the issue lies somewhere in the process_select() logic but has been unsuccessful in
-// pinpointing it.
-
-// The correct sequence of LEDS (all on FRDM board) for test0 are GREEN on and off 3 times (RT process) and then
-// RED on and off 4 times (non-RT process) before going through the main function and toggling both GREEN and RED
-// on and off once. A video can be found on Ed if this is confusing under the Prelab/Lab 5 QnA pinned post. Good luck
 
 #include <stdlib.h>
 #include "3140_concur.h"
 #include "realtime.h"
-#include "process.h"
-#include "led.h"
-
-volatile realtime_t current_time = {0, 0};
-int process_deadline_met = 0;  // Counter for jobs that meet deadline
-int process_deadline_miss = 0; // Counter for jobs that miss deadline
 
 extern process_queue_t process_queue;  // Global non‐RT process queue
 process_queue_t ready_rt = {NULL};       // Ready real‐time process queue
 process_queue_t not_ready_rt = {NULL};     // RT processes not yet ready
+
+int process_deadline_met = 0;
+int process_deadline_miss = 0;
+
+volatile realtime_t current_time = {0, 0};
 
 static void process_free(process_t *proc) {
     if (proc->is_realtime) {
@@ -47,7 +22,43 @@ static void process_free(process_t *proc) {
     free(proc);
 }
 
-static int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two) {
+/* Starts up the concurrent execution */
+void process_start (void) {
+	SIM->SCGC6 |= SIM_SCGC6_PIT_MASK;
+	PIT->MCR = 0;
+	PIT->CHANNEL[0].LDVAL = 150000;
+	NVIC_EnableIRQ(PIT_IRQn);
+	// Don't enable the timer yet. The scheduler will do so itself
+
+	if(is_empty(&process_queue)) return;
+	//bail out fast if no processes were ever created
+
+	process_begin();
+}
+
+/* Create a new process */
+int process_create(void (*f)(void), int n) {
+    unsigned int *sp = process_stack_init(f, n);
+    if (!sp) return -2;
+
+    process_t *proc = (process_t*)malloc(sizeof(process_t));
+    if (!proc) {
+        process_stack_free(sp, n);
+        return -1;
+    }
+
+    proc->sp = proc->orig_sp = sp;
+    proc->n = n;
+    proc->is_realtime = 0;
+    proc->arrival_time = NULL;
+    proc->deadline = NULL;
+    proc->next = NULL;
+
+    enqueue(proc, &process_queue);
+    return 0;
+}
+
+int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two) {
     if ((proc_one->sec < proc_two->sec) ||
         (proc_one->sec == proc_two->sec && proc_one->msec <= proc_two->msec)) {
         return 1;
@@ -55,9 +66,11 @@ static int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two
     return 0;
 }
 
-static void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
+void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
+	proc->next = NULL;
 	if(queue->head == NULL) {
 		queue->head = proc;
+		return;
 	}
     if (cmp_time(proc->arrival_time, queue->head->arrival_time)) {
         proc->next = queue->head;
@@ -73,7 +86,8 @@ static void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
     cur->next = proc;
 }
 
-static realtime_t compute_abs_deadline(process_t *proc) {
+
+realtime_t compute_abs_deadline(process_t *proc) {
     realtime_t abs_deadline;
     abs_deadline.sec = proc->arrival_time->sec + proc->deadline->sec;
     abs_deadline.msec = proc->arrival_time->msec + proc->deadline->msec;
@@ -84,7 +98,9 @@ static realtime_t compute_abs_deadline(process_t *proc) {
     return abs_deadline;
 }
 
-static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
+void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
+
+	proc->next = NULL;
     realtime_t abs_deadline_proc = compute_abs_deadline(proc);
     if (queue->head == NULL) {
         queue->head = proc;
@@ -109,48 +125,11 @@ static void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
     cur->next = proc;
 }
 
-void PIT1_Service(void) {
-    current_time.msec++;
-    if (current_time.msec >= 1000) {
-        current_time.sec += current_time.msec/1000;
-        current_time.msec %= 1000;
-    }
-
-    while (!is_empty(&not_ready_rt) &&
-           cmp_time(not_ready_rt.head->arrival_time, &current_time)) {
-        process_t *proc = dequeue(&not_ready_rt);
-        add_sorted_deadline(proc, &ready_rt);
-    }
-
-    PIT->CHANNEL[1].TFLG = PIT_TFLG_TIF_MASK;
-}
-
-int process_create(void (*f)(void), int n) {
-    unsigned int *sp = process_stack_init(f, n);
-    if (!sp) return -2;
-
-    process_t *proc = malloc(sizeof(process_t));
-    if (!proc) {
-        process_stack_free(sp, n);
-        return -1;
-    }
-
-    proc->sp = proc->orig_sp = sp;
-    proc->n = n;
-    proc->is_realtime = 0;
-    proc->arrival_time = NULL;
-    proc->deadline = NULL;
-    proc->next = NULL;
-
-    enqueue(proc, &process_queue);
-    return 0;
-}
-
 int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *deadline) {
     unsigned int *sp = process_stack_init(f, n);
     if (!sp) return -2;
 
-    process_t *proc = malloc(sizeof(process_t));
+    process_t *proc = (process_t*)malloc(sizeof(process_t));
     if (!proc) {
         process_stack_free(sp, n);
         return -1;
@@ -175,25 +154,26 @@ int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *dea
     proc->deadline = deadline_copy;
     proc->next = NULL;
 
-    if (cmp_time(&current_time, start_copy)) {
+    if (cmp_time(start_copy, &current_time)) {
         add_sorted_deadline(proc, &ready_rt);
     } else {
         add_sorted_arrival(proc, &not_ready_rt);
     }
     return 0;
 }
-
-
+/* Called by the runtime system to select another process.
+   "cursp" = the stack pointer for the currently running process
+*/
 unsigned int *process_select(unsigned int *cursp) {
 
     if (cursp && current_process_p) {
         // Update the saved stack pointer for the currently running process.
         current_process_p->sp = cursp;
         if ((current_process_p->is_realtime)) {
-        	// For real-time processes, do not requeue.
-			// Simply return the updated context so that execution resumes
-			// from the point of preemption.
-			return current_process_p->sp;
+        	// For real-time processes, re-enqueue into
+        	// real-time queue in case another high priority process ready now
+			//add_sorted_deadline(current_process_p, &ready_rt);
+        	return current_process_p -> sp;
         } else {
         	// For non-real-time processes, requeue for later execution.
         	enqueue(current_process_p, &process_queue);
@@ -203,19 +183,21 @@ unsigned int *process_select(unsigned int *cursp) {
         if (current_process_p->is_realtime) {
             realtime_t deadline_abs = compute_abs_deadline(current_process_p);
             if (cmp_time(&current_time, &deadline_abs)) {
-                process_deadline_met++;
-            } else {
                 process_deadline_miss++;
+            } else {
+                process_deadline_met++;
             }
         }
+
         process_free(current_process_p);
     }
 
-    // Select the next process:
-    // Give priority to ready real-time processes.
+
     if(is_empty(&ready_rt) && is_empty(&process_queue) && is_empty(&not_ready_rt)) {
     	return NULL;
     }
+    // Select the next process:
+    // Give priority to ready real-time processes.
     while(!is_empty(&ready_rt) || !is_empty(&process_queue) || !is_empty(&not_ready_rt)) {
 		if (!is_empty(&ready_rt)) {
 			current_process_p = dequeue(&ready_rt);
@@ -230,24 +212,19 @@ unsigned int *process_select(unsigned int *cursp) {
     return current_process_p->sp;
 }
 
-void process_start(void) {
-    SIM->SCGC6 |= SIM_SCGC6_PIT_MASK;
-    PIT->MCR = 0;
 
-    PIT->CHANNEL[0].LDVAL = 150000; // 10 milliseconds
-    PIT->CHANNEL[0].TCTRL = PIT_TCTRL_TIE_MASK | PIT_TCTRL_TEN_MASK;
-
-    PIT->CHANNEL[1].LDVAL = 15000;  // 1 millisecond
-    PIT->CHANNEL[1].TCTRL = PIT_TCTRL_TIE_MASK | PIT_TCTRL_TEN_MASK;
-
-    NVIC_EnableIRQ(PIT_IRQn);
-
-    current_time.sec = 0;
-    current_time.msec = 0;
-
-    current_process_p = NULL;
-
-    if (!is_empty(&process_queue) || !is_empty(&ready_rt) || !is_empty(&not_ready_rt)) {
-        process_begin();
+void PIT1_Service(void) {
+    current_time.msec++;
+    if (current_time.msec >= 1000) {
+        current_time.sec += current_time.msec/1000;
+        current_time.msec %= 1000;
     }
+
+    while (!is_empty(&not_ready_rt) &&
+           cmp_time(not_ready_rt.head->arrival_time, &current_time)) {
+        process_t *proc = dequeue(&not_ready_rt);
+        add_sorted_deadline(proc, &ready_rt);
+    }
+
+    PIT->CHANNEL[1].TFLG = PIT_TFLG_TIF_MASK;
 }
