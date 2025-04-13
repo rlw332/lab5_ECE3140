@@ -26,13 +26,14 @@ extern process_queue_t process_queue;  // Global non‐RT process queue
 process_queue_t ready_rt = {NULL};       // Ready real‐time process queue
 process_queue_t not_ready_rt = {NULL};     // RT processes not yet ready
 
-int process_deadline_met = 0;
-int process_deadline_miss = 0;
+int process_deadline_met = 0; // number of processes that meet deadline
+int process_deadline_miss = 0; // processes that miss deadline
 
 volatile realtime_t current_time = {0, 0};
 
-process_t *idle_process = NULL;
+process_t *idle_process = NULL; // will be used for stalling purposes when no processes are ready
 
+/* free process proc */
 static void process_free(process_t *proc) {
     if (proc->is_realtime) {
         free(proc->arrival_time);
@@ -42,24 +43,25 @@ static void process_free(process_t *proc) {
     free(proc);
 }
 
+/* function for idle process that does nothing */
 void idle(void) {
     while (1) {
     }
 }
 /* Starts up the concurrent execution */
 void process_start (void) {
-	unsigned int *sp = process_stack_init(idle, 20);
+	unsigned int *sp = process_stack_init(idle, 20); // initialize idle process that may or may not be used
 
 	idle_process = (process_t*)malloc(sizeof(process_t));
 	idle_process->sp = idle_process->orig_sp = sp;
 	idle_process->n = 20;
 	idle_process->is_realtime = -1;
 
-	SIM->SCGC6 |= SIM_SCGC6_PIT_MASK;
+	SIM->SCGC6 |= SIM_SCGC6_PIT_MASK; // all the normal stuff
 	PIT->MCR = 0;
 	PIT->CHANNEL[0].LDVAL = 150000;
 	PIT->CHANNEL[1].LDVAL = 15000;
-	PIT->CHANNEL[1].TCTRL = PIT_TCTRL_TIE_MASK | PIT_TCTRL_TEN_MASK;
+	PIT->CHANNEL[1].TCTRL = PIT_TCTRL_TIE_MASK | PIT_TCTRL_TEN_MASK; // timer needs to be enabled for PIT1 because scheduler does not do itself
 
 	NVIC_EnableIRQ(PIT_IRQn);
 	// Don't enable the timer yet. The scheduler will do so itself
@@ -70,7 +72,7 @@ void process_start (void) {
 	process_begin();
 }
 
-/* Create a new process */
+/* Create a new non-realtime process */
 int process_create(void (*f)(void), int n) {
     unsigned int *sp = process_stack_init(f, n);
     if (!sp) return -2;
@@ -92,6 +94,7 @@ int process_create(void (*f)(void), int n) {
     return 0;
 }
 
+/* compare method (similar to normal sorting), returns 1 if time proc_one is earlier than time proc_two */
 int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two) {
     if ((proc_one->sec < proc_two->sec) ||
         (proc_one->sec == proc_two->sec && proc_one->msec <= proc_two->msec)) {
@@ -100,18 +103,24 @@ int cmp_time(volatile realtime_t *proc_one, volatile realtime_t *proc_two) {
     return 0;
 }
 
+/* add to queue a process proc, maintaining that the queue is sorted by earliest arrival first */
 void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
-	proc->next = NULL;
-	if(queue->head == NULL) {
-		queue->head = proc;
-		return;
-	}
+    proc->next = NULL;
+
+    // if queue empty, set as head
+    if(queue->head == NULL) {
+	queue->head = proc;
+	return;
+    }
+
+    // if proc earliest arrival, add before head
     if (cmp_time(proc->arrival_time, queue->head->arrival_time)) {
         proc->next = queue->head;
         queue->head = proc;
         return;
     }
 
+    // loop through queue until at where proc should be, when arrival time of proc is 'sandwiched' between neighboring processes
     process_t *cur = queue->head;
     while (!(cur->next == NULL) && cmp_time(cur->next->arrival_time, proc->arrival_time)) {
         cur = cur->next;
@@ -120,7 +129,7 @@ void add_sorted_arrival(process_t *proc, process_queue_t *queue) {
     cur->next = proc;
 }
 
-
+/* compute absolute deadline for a process by taking arrival + relative deadline */
 realtime_t compute_abs_deadline(process_t *proc) {
     realtime_t abs_deadline;
     abs_deadline.sec = proc->arrival_time->sec + proc->deadline->sec;
@@ -132,21 +141,26 @@ realtime_t compute_abs_deadline(process_t *proc) {
     return abs_deadline;
 }
 
+/* add to queue a process proc, maintaining that the queue is sorted by earliest deadline first*/
 void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
-
-	proc->next = NULL;
+    proc->next = NULL;
     realtime_t abs_deadline_proc = compute_abs_deadline(proc);
+
+    // if no elements, set this as the head
     if (queue->head == NULL) {
         queue->head = proc;
         return;
     }
+	
     realtime_t abs_deadline_head = compute_abs_deadline(queue->head);
+    // if proc is earlier than earliest deadline, insert at beginning
     if (cmp_time(&abs_deadline_proc, &abs_deadline_head)) {
         proc->next = queue->head;
         queue->head = proc;
         return;
     }
 
+    // loop through rest until get to place where proc should be (time is in between 2 neighboring processes)
     process_t *cur = queue->head;
     while (!(cur->next == NULL)) {
         realtime_t abs_deadline_next = compute_abs_deadline(cur->next);
@@ -159,6 +173,7 @@ void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
     cur->next = proc;
 }
 
+/* create realtime process */
 int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *deadline) {
     unsigned int *sp = process_stack_init(f, n);
     if (!sp) return -2;
@@ -188,6 +203,7 @@ int process_rt_create(void (*f)(void), int n, realtime_t *start, realtime_t *dea
     proc->deadline = deadline_copy;
     proc->next = NULL;
 
+    // checks whether the process is currently ready or not to determine which queue to add to
     if (cmp_time(start_copy, &current_time)) {
         add_sorted_deadline(proc, &ready_rt);
     } else {
@@ -225,7 +241,7 @@ unsigned int *process_select(unsigned int *cursp) {
         process_free(current_process_p);
     }
 
-
+    // updates the ready queue to include all processes previously not ready but now ready
     while (!is_empty(&not_ready_rt) &&
                cmp_time(not_ready_rt.head->arrival_time, &current_time)) {
 		process_t *proc = dequeue(&not_ready_rt);
@@ -249,7 +265,7 @@ unsigned int *process_select(unsigned int *cursp) {
 
 }
 
-
+// called every millisecond and updates the current time
 void PIT1_Service(void) {
 	__disable_irq();
     current_time.msec++;
