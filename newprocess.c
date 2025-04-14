@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include "3140_concur.h"
 #include "realtime.h"
-#include "led.h"
+//#include "led.h"(included when testing where/if the code got to certain points
 
 extern process_queue_t process_queue;  // Global non‐RT process queue
 process_queue_t ready_rt = {NULL};       // Ready real‐time process queue
@@ -35,7 +35,7 @@ process_t *idle_process = NULL; // will be used for stalling purposes when no pr
 
 /* free process proc */
 static void process_free(process_t *proc) {
-    if (proc->is_realtime) {
+    if (proc->is_realtime == 1) {
         free(proc->arrival_time);
         free(proc->deadline);
     }
@@ -151,7 +151,7 @@ void add_sorted_deadline(process_t *proc, process_queue_t *queue) {
         queue->head = proc;
         return;
     }
-	
+
     realtime_t abs_deadline_head = compute_abs_deadline(queue->head);
     // if proc is earlier than earliest deadline, insert at beginning
     if (cmp_time(&abs_deadline_proc, &abs_deadline_head)) {
