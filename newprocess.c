@@ -259,6 +259,7 @@ unsigned int *process_select(unsigned int *cursp) {
 		current_process_p = idle_process;
 		return current_process_p->sp;
 	} else {
+	    	process_free(idle_process);
 		return NULL;
 	}
 
